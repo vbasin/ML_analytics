@@ -1,0 +1,54 @@
+"""VWAP deviation features computed from tick-level TBBO data."""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+
+def compute(
+    tbbo: pd.DataFrame,
+    timestep: str = "10s",
+    deviation_bands: list[float] | None = None,
+) -> pd.DataFrame:
+    """Compute VWAP and deviation features.
+
+    Parameters
+    ----------
+    tbbo : DataFrame with columns: ts_event, price, size.
+    timestep : Output resample interval.
+    deviation_bands : Standard deviation multiples for band features.
+    """
+    if deviation_bands is None:
+        deviation_bands = [1.0, 2.0]
+
+    df = tbbo.sort_values("ts_event").set_index("ts_event")
+    df["pv"] = df["price"] * df["size"]
+
+    # Cumulative VWAP reset per trading day
+    df["date"] = df.index.date
+    df["cum_pv"] = df.groupby("date")["pv"].cumsum()
+    df["cum_vol"] = df.groupby("date")["size"].cumsum()
+    df["vwap"] = df["cum_pv"] / df["cum_vol"].replace(0, np.nan)
+
+    # Resample to timestep
+    bars = df.resample(timestep).agg(
+        vwap=("vwap", "last"),
+        close=("price", "last"),
+        volume=("size", "sum"),
+    )
+
+    features = pd.DataFrame(index=bars.index)
+    features["vw_vwap_dist"] = (bars["close"] - bars["vwap"]) / bars["vwap"].replace(0, np.nan)
+
+    # Rolling standard deviation of VWAP distance for bands
+    for w in (30, 60):
+        std = features["vw_vwap_dist"].rolling(w).std().replace(0, np.nan)
+        features[f"vw_vwap_zscore_{w}"] = features["vw_vwap_dist"] / std
+
+    # Band position: normalized distance in terms of rolling std
+    for band in deviation_bands:
+        features[f"vw_above_band_{band}"] = (features["vw_vwap_dist"] > band * features["vw_vwap_dist"].rolling(60).std()).astype(np.float32)
+        features[f"vw_below_band_{band}"] = (features["vw_vwap_dist"] < -band * features["vw_vwap_dist"].rolling(60).std()).astype(np.float32)
+
+    return features.astype(np.float32)

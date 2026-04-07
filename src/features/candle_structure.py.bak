@@ -1,0 +1,102 @@
+"""Candle structure features: body/range ratio, CLV, volatility regime."""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+
+def compute(
+    candles: pd.DataFrame,
+    agg_windows: list[str] | None = None,
+    clv_rolling: list[int] | None = None,
+) -> pd.DataFrame:
+    """Compute candle structure features from OHLCV candle data.
+
+    Parameters
+    ----------
+    candles : DataFrame with columns: open, high, low, close, volume.
+    agg_windows : Additional aggregation windows (e.g. ['1min','5min']).
+    clv_rolling : Rolling bar counts for CLV smoothing.
+    """
+    if clv_rolling is None:
+        clv_rolling = [2, 3, 5, 10]
+
+    df = candles.copy()
+    features = pd.DataFrame(index=df.index)
+
+    candle_range = df["high"] - df["low"]
+    body = (df["close"] - df["open"]).abs()
+
+    features["cs_body_range_ratio"] = body / candle_range.replace(0, np.nan)
+    features["cs_body_direction"] = np.sign(df["close"] - df["open"])
+
+    # Close Location Value (CLV): where close sits in the bar's range
+    features["cs_clv"] = (2 * df["close"] - df["high"] - df["low"]) / candle_range.replace(0, np.nan)
+
+    # Rolling CLV
+    for w in clv_rolling:
+        features[f"cs_clv_ma_{w}"] = features["cs_clv"].rolling(w).mean()
+
+    # Upper / lower shadow ratios
+    features["cs_upper_shadow"] = (df["high"] - df[["open", "close"]].max(axis=1)) / candle_range.replace(0, np.nan)
+    features["cs_lower_shadow"] = (df[["open", "close"]].min(axis=1) - df["low"]) / candle_range.replace(0, np.nan)
+
+    # Volatility regime: rolling range relative to longer-term
+    for w in (6, 30, 60):
+        features[f"cs_range_ma_{w}"] = candle_range.rolling(w).mean()
+    features["cs_vol_regime"] = candle_range / features["cs_range_ma_30"].replace(0, np.nan)
+
+    # Range expansion/contraction
+    features["cs_range_chg"] = candle_range / candle_range.shift(1).replace(0, np.nan) - 1
+
+    # CLV rolling statistics — persistent directional bias
+    for w in clv_rolling:
+        features[f"cs_clv_bullish_count_{w}"] = (
+            features["cs_clv"].rolling(w).apply(lambda x: (x > 0).sum(), raw=True)
+        )
+
+    return features.astype(np.float32)
+
+
+def compute_multitimeframe(
+    candles_1m: pd.DataFrame,
+    timeframes: list[str] | None = None,
+) -> pd.DataFrame:
+    """Resample 1-min candles to multiple timeframes and compute body_range + CLV.
+
+    Parameters
+    ----------
+    candles_1m : DataFrame with DatetimeIndex and columns: open, high, low, close, volume.
+    timeframes : Resample periods, e.g. ['5min', '15min', '30min'].
+
+    Returns
+    -------
+    DataFrame indexed like candles_1m with columns:
+        cs_{tf}_body_range, cs_{tf}_clv  for each timeframe.
+    """
+    if timeframes is None:
+        timeframes = ["5min", "15min", "30min"]
+
+    features = pd.DataFrame(index=candles_1m.index)
+
+    for tf in timeframes:
+        label = tf.replace("min", "m")
+        ohlcv = candles_1m.resample(tf).agg(
+            {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+        ).dropna(subset=["open"])
+
+        rng = ohlcv["high"] - ohlcv["low"]
+        body = (ohlcv["close"] - ohlcv["open"]).abs()
+        ohlcv[f"cs_{label}_body_range"] = body / rng.replace(0, np.nan)
+        ohlcv[f"cs_{label}_clv"] = (
+            (2 * ohlcv["close"] - ohlcv["high"] - ohlcv["low"]) / rng.replace(0, np.nan)
+        )
+
+        # Forward-fill back to 1-min resolution
+        aligned = ohlcv[[f"cs_{label}_body_range", f"cs_{label}_clv"]].reindex(
+            candles_1m.index, method="ffill"
+        )
+        features = features.join(aligned)
+
+    return features.astype(np.float32)

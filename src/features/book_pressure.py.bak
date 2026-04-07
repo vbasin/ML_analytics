@@ -1,0 +1,73 @@
+"""Book pressure features from BBO-1s data.
+
+Includes: bid/ask size imbalance, spread dynamics, depth change velocity,
+and liquidity withdrawal signals (P1 signal priority).
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+
+def compute(
+    bbo: pd.DataFrame,
+    timestep: str = "10s",
+) -> pd.DataFrame:
+    """Compute book pressure features from 1-second BBO snapshots.
+
+    Parameters
+    ----------
+    bbo : DataFrame with columns: ts_event, bid_px, ask_px, bid_sz, ask_sz, close
+    timestep : Resample interval.
+    """
+    df = bbo.set_index("ts_event").sort_index()
+
+    # Per-second metrics
+    df["spread"] = df["ask_px"] - df["bid_px"]
+    df["mid"] = (df["bid_px"] + df["ask_px"]) / 2
+    df["imbalance"] = (df["bid_sz"] - df["ask_sz"]) / (df["bid_sz"] + df["ask_sz"]).replace(0, np.nan)
+    df["depth_total"] = df["bid_sz"] + df["ask_sz"]
+
+    # Resample to timestep
+    bars = df.resample(timestep).agg(
+        spread_mean=("spread", "mean"),
+        spread_max=("spread", "max"),
+        imbalance_mean=("imbalance", "mean"),
+        imbalance_last=("imbalance", "last"),
+        depth_total_mean=("depth_total", "mean"),
+        depth_total_min=("depth_total", "min"),
+        bid_sz_mean=("bid_sz", "mean"),
+        ask_sz_mean=("ask_sz", "mean"),
+        mid_last=("mid", "last"),
+    )
+
+    features = pd.DataFrame(index=bars.index)
+
+    # Spread features
+    features["bp_spread_mean"] = bars["spread_mean"]
+    features["bp_spread_max"] = bars["spread_max"]
+    for w in (6, 30, 60):
+        features[f"bp_spread_zscore_{w}"] = (
+            (bars["spread_mean"] - bars["spread_mean"].rolling(w).mean())
+            / bars["spread_mean"].rolling(w).std().replace(0, np.nan)
+        )
+
+    # Imbalance features
+    features["bp_imbalance"] = bars["imbalance_last"]
+    features["bp_imbalance_ma6"] = bars["imbalance_mean"].rolling(6).mean()
+
+    # Depth features — liquidity withdrawal detection
+    features["bp_depth_total"] = bars["depth_total_mean"]
+    features["bp_depth_min"] = bars["depth_total_min"]
+    for w in (6, 30):
+        depth_ma = bars["depth_total_mean"].rolling(w).mean()
+        features[f"bp_depth_chg_{w}"] = bars["depth_total_mean"] / depth_ma.replace(0, np.nan) - 1
+        features[f"bp_depth_zscore_{w}"] = (
+            (bars["depth_total_mean"] - depth_ma) / bars["depth_total_mean"].rolling(w).std().replace(0, np.nan)
+        )
+
+    # Bid/ask size ratio (persistent buying/selling pressure)
+    features["bp_bid_ask_ratio"] = bars["bid_sz_mean"] / bars["ask_sz_mean"].replace(0, np.nan)
+
+    return features.astype(np.float32)

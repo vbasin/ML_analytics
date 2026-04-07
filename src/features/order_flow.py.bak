@@ -1,0 +1,63 @@
+"""Order flow features computed from TBBO tick data.
+
+Includes: CVD (cumulative volume delta), trade delta, absorption detection,
+aggressive flow ratios, and volume-bucketed flow metrics.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+
+def compute(
+    tbbo: pd.DataFrame,
+    timestep: str = "10s",
+    cvd_windows: list[int] | None = None,
+) -> pd.DataFrame:
+    """Compute order flow features from TBBO data resampled to *timestep*.
+
+    Parameters
+    ----------
+    tbbo : DataFrame with columns: ts_event, price, size, side, bid_px, ask_px
+    timestep : Resample interval (e.g. '10s').
+    cvd_windows : Rolling windows in number of bars for CVD metrics.
+    """
+    if cvd_windows is None:
+        cvd_windows = [3, 6, 12, 30]  # bars @ 10s = 30s, 60s, 120s, 300s
+
+    df = tbbo.copy()
+    df["signed_size"] = np.where(df["side"] == "B", df["size"], np.where(df["side"] == "A", -df["size"], 0))
+
+    # Resample to timestep bars
+    bars = df.set_index("ts_event").resample(timestep).agg(
+        buy_volume=("signed_size", lambda s: s.clip(lower=0).sum()),
+        sell_volume=("signed_size", lambda s: (-s.clip(upper=0)).sum()),
+        delta=("signed_size", "sum"),
+        trade_count=("size", "count"),
+        total_volume=("size", "sum"),
+    )
+
+    # CVD: cumulative volume delta
+    bars["cvd"] = bars["delta"].cumsum()
+
+    features = pd.DataFrame(index=bars.index)
+    features["of_delta"] = bars["delta"]
+    features["of_delta_pct"] = bars["delta"] / bars["total_volume"].replace(0, np.nan)
+    features["of_buy_ratio"] = bars["buy_volume"] / bars["total_volume"].replace(0, np.nan)
+    features["of_trade_count"] = bars["trade_count"]
+
+    # Rolling CVD windows
+    for w in cvd_windows:
+        features[f"of_cvd_chg_{w}"] = bars["cvd"].diff(w)
+        features[f"of_delta_sum_{w}"] = bars["delta"].rolling(w).sum()
+        features[f"of_delta_zscore_{w}"] = (
+            (bars["delta"] - bars["delta"].rolling(w).mean())
+            / bars["delta"].rolling(w).std().replace(0, np.nan)
+        )
+
+    # Absorption: large volume bars with small price change (added at engine level)
+    features["of_volume_ma_30"] = bars["total_volume"].rolling(30).mean()
+    features["of_volume_ratio"] = bars["total_volume"] / features["of_volume_ma_30"].replace(0, np.nan)
+
+    return features.astype(np.float32)

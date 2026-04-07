@@ -1,0 +1,34 @@
+.env
+.env.*
+!.env.example
+
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+logs/
+
+data/
+
+/+ health check | **Gap**: no monitoring deployed |
+/, 
+/,
+/actual deployed state after Phases 1–11.
+/caledb_information.jobs j
+/cript |
+/ition Layer](-6-data-acquisition-layer)
+/of 2026-04-06) |
+/one-time backfill only, no live feed |
+/ql*
+/ql -d vtech_market --no-align -t -c \dt databento.*
+/ql -d vtech_market -A -t
+/ql -d vtech_market -t -c SELECT column_name, data_type FROM information_schema.columns WHERE table_schema='databento' AND table_name='bbo_1s' ORDER BY ordinal_position;
+/ql -h 127.0.0.1 -U vtech -d vtech_market -c SELECT 'tbbo' as tbl, count(*) FROM databento.tbbo;
+/ql -h 127.0.0.1 -p 5432 -U vtech -d vtech_market -tAc "
+/tration](-11-service-orchestration)
+
+.DS_Store

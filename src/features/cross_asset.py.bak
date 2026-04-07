@@ -1,0 +1,70 @@
+"""Cross-asset features: NQ/ES correlation, lead-lag, spread, and beta."""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+
+def compute(
+    nq_bars: pd.DataFrame,
+    es_bars: pd.DataFrame,
+    timestep: str = "10s",
+) -> pd.DataFrame:
+    """Compute cross-asset features between NQ and ES futures.
+
+    Parameters
+    ----------
+    nq_bars : Resampled NQ price bars with 'close' column.
+    es_bars : Resampled ES price bars with 'close' column.
+    timestep : Not used directly (both inputs should already be at this resolution).
+
+    Returns 14 features prefixed ``ca_``.
+    """
+    # Align on common timestamps
+    common = nq_bars.index.intersection(es_bars.index)
+    if len(common) < 30:
+        return pd.DataFrame(index=nq_bars.index)
+
+    nq = nq_bars.reindex(common)["close"]
+    es = es_bars.reindex(common)["close"]
+
+    features = pd.DataFrame(index=common)
+
+    # Returns
+    nq_ret = nq.pct_change()
+    es_ret = es.pct_change()
+
+    # ── Correlation (multi-window) ──
+    for w in (30, 60, 180):
+        features[f"ca_corr_{w}"] = nq_ret.rolling(w).corr(es_ret)
+
+    # ── NQ/ES ratio and z-score ──
+    ratio = nq / es.replace(0, np.nan)
+    features["ca_ratio"] = ratio
+    features["ca_ratio_zscore_60"] = (
+        (ratio - ratio.rolling(60).mean()) / ratio.rolling(60).std().replace(0, np.nan)
+    )
+
+    # ── Lead-lag: ES return predicting NQ ──
+    features["ca_es_ret_lag1"] = es_ret.shift(1)
+    features["ca_es_ret_lag2"] = es_ret.shift(2)
+
+    # ── Divergence: NQ return minus ES return ──
+    features["ca_ret_divergence"] = nq_ret - es_ret
+
+    # ── Rolling beta (NQ regressed on ES) ──
+    for w in (60, 180):
+        cov = nq_ret.rolling(w).cov(es_ret)
+        var = es_ret.rolling(w).var()
+        features[f"ca_beta_{w}"] = cov / var.replace(0, np.nan)
+
+    # ── Relative strength: NQ cumulative return minus ES cumulative return ──
+    nq_cum = nq_ret.rolling(60).sum()
+    es_cum = es_ret.rolling(60).sum()
+    features["ca_rel_strength_60"] = nq_cum - es_cum
+
+    # ── ES momentum (for standalone signal) ──
+    features["ca_es_mom_30"] = es.pct_change(30)
+
+    return features.astype(np.float32)

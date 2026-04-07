@@ -1,0 +1,23 @@
+[Unit]
+Description=VTech Databento Live Streamer
+After=network-online.target postgresql.service
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=vtech
+Group=vtech
+WorkingDirectory=/opt/vtech
+EnvironmentFile=/opt/vtech/.env
+ExecStart=/opt/vtech/.venv/bin/python -m src.acquisition.live_streamer
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vtech-live-streamer
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target
